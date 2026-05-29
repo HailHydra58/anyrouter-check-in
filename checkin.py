@@ -67,6 +67,14 @@ def parse_cookies(cookies_data):
 	return {}
 
 
+def apply_account_auth(headers: dict, account: AccountConfig) -> dict:
+	"""为支持 access_token 的 New API 站点追加认证头"""
+	token = (account.access_token or '').strip()
+	if token:
+		headers['Authorization'] = token
+	return headers
+
+
 async def get_waf_cookies_with_playwright(account_name: str, login_url: str, required_cookies: list[str]):
 	"""使用 Playwright 获取 WAF cookies（隐私模式）"""
 	print(f'[PROCESSING] {account_name}: Starting browser to get WAF cookies...')
@@ -277,24 +285,25 @@ async def check_in_account_with_playwright(account: AccountConfig, account_index
 
 			try:
 				hostname = urlparse(provider_config.domain).hostname
-				await context.add_cookies(
-					[
-						{
-							'name': name,
-							'value': value,
-							'domain': hostname,
-							'path': '/',
-							'secure': provider_config.domain.startswith('https://'),
-						}
-						for name, value in user_cookies.items()
-					]
-				)
+				if user_cookies:
+					await context.add_cookies(
+						[
+							{
+								'name': name,
+								'value': value,
+								'domain': hostname,
+								'path': '/',
+								'secure': provider_config.domain.startswith('https://'),
+							}
+							for name, value in user_cookies.items()
+						]
+					)
 
 				page = await context.new_page()
 				await page.goto(f'{provider_config.domain}{provider_config.login_path}', wait_until='networkidle')
 				await page.wait_for_timeout(3000)
 
-				headers = build_headers(provider_config, account.api_user)
+				headers = apply_account_auth(build_headers(provider_config, account.api_user), account)
 				user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
 				before_response = await browser_json_request(page, user_info_url, 'GET', headers)
 				user_info_before = parse_user_info_response(before_response['status'], before_response.get('data'))
@@ -405,7 +414,7 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 	print(f'[INFO] {account_name}: Using provider "{account.provider}" ({provider_config.domain})')
 
 	user_cookies = parse_cookies(account.cookies)
-	if not user_cookies:
+	if not user_cookies and not account.access_token:
 		print(f'[FAILED] {account_name}: Invalid configuration format')
 		return False, None
 
@@ -421,7 +430,7 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 	try:
 		client.cookies.update(all_cookies)
 
-		headers = build_headers(provider_config, account.api_user)
+		headers = apply_account_auth(build_headers(provider_config, account.api_user), account)
 
 		user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
 		user_info_before = get_user_info(client, headers, user_info_url)

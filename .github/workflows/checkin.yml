@@ -73,6 +73,8 @@ jobs:
       env:
         ANYROUTER_ACCOUNTS: ${{ secrets.ANYROUTER_ACCOUNTS }}
         PROVIDERS: ${{ secrets.PROVIDERS }}
+        MUYUAN_SESSION: ${{ secrets.MUYUAN_SESSION }}
+        MUYUAN_API_USER: ${{ secrets.MUYUAN_API_USER }}
         DINGDING_WEBHOOK: ${{ secrets.DINGDING_WEBHOOK }}
         EMAIL_USER: ${{ secrets.EMAIL_USER }}
         EMAIL_PASS: ${{ secrets.EMAIL_PASS }}

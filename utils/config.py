@@ -139,8 +139,9 @@ class AppConfig:
 class AccountConfig:
 	"""账号配置"""
 
-	cookies: dict | str
 	api_user: str
+	cookies: dict | str | None = None
+	access_token: str | None = None
 	provider: str = 'anyrouter'
 	name: str | None = None
 
@@ -150,7 +151,13 @@ class AccountConfig:
 		provider = data.get('provider', 'anyrouter')
 		name = data.get('name', f'Account {index + 1}')
 
-		return cls(cookies=data['cookies'], api_user=data['api_user'], provider=provider, name=name if name else None)
+		return cls(
+			api_user=data['api_user'],
+			cookies=data.get('cookies', {}),
+			access_token=data.get('access_token'),
+			provider=provider,
+			name=name if name else None,
+		)
 
 	def get_display_name(self, index: int) -> str:
 		"""获取显示名称"""
@@ -177,8 +184,12 @@ def load_accounts_config() -> list[AccountConfig] | None:
 				print(f'ERROR: Account {i + 1} configuration format is incorrect')
 				return None
 
-			if 'cookies' not in account_dict or 'api_user' not in account_dict:
-				print(f'ERROR: Account {i + 1} missing required fields (cookies, api_user)')
+			if 'api_user' not in account_dict:
+				print(f'ERROR: Account {i + 1} missing required field (api_user)')
+				return None
+
+			if 'cookies' not in account_dict and 'access_token' not in account_dict:
+				print(f'ERROR: Account {i + 1} missing authentication fields (cookies or access_token)')
 				return None
 
 			if 'name' in account_dict and not account_dict['name']:
@@ -186,6 +197,25 @@ def load_accounts_config() -> list[AccountConfig] | None:
 				return None
 
 			accounts.append(AccountConfig.from_dict(account_dict, i))
+
+		muyuan_session = os.getenv('MUYUAN_SESSION')
+		if muyuan_session:
+			muyuan_api_user = os.getenv('MUYUAN_API_USER') or '16780'
+			muyuan_account = AccountConfig(
+				name=os.getenv('MUYUAN_ACCOUNT_NAME', '君の的公益'),
+				provider='muyuan',
+				api_user=muyuan_api_user,
+				cookies={'session': muyuan_session},
+			)
+
+			for index, account in enumerate(accounts):
+				if account.provider == 'muyuan':
+					accounts[index] = muyuan_account
+					print('[INFO] Replaced muyuan account session from MUYUAN_SESSION')
+					break
+			else:
+				accounts.append(muyuan_account)
+				print('[INFO] Added muyuan account from MUYUAN_SESSION')
 
 		return accounts
 	except Exception as e:

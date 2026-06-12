@@ -19,8 +19,10 @@ class ProviderConfig:
 	sign_in_path: str | None = '/api/user/sign_in'
 	user_info_path: str = '/api/user/self'
 	api_user_key: str = 'new-api-user'
-	bypass_method: Literal['waf_cookies', 'playwright'] | None = None
+	bypass_method: Literal['waf_cookies'] | None = None
 	waf_cookie_names: List[str] | None = None
+	use_proxy: bool = False
+	persist_profile: bool = False
 
 	def __post_init__(self):
 		required_waf_cookies = set()
@@ -33,37 +35,37 @@ class ProviderConfig:
 
 				required_waf_cookies.add(name)
 
-		if self.bypass_method == 'waf_cookies' and not required_waf_cookies:
+		if not required_waf_cookies:
 			self.bypass_method = None
 
 		self.waf_cookie_names = list(required_waf_cookies)
 
 	@classmethod
-	def from_dict(cls, name: str, data: dict) -> 'ProviderConfig':
+	def from_dict(cls, name: str, data: dict, *, defaults: 'ProviderConfig | None' = None) -> 'ProviderConfig':
 		"""从字典创建 ProviderConfig
 
 		配置格式:
 		- 基础: {"domain": "https://example.com"}
-		- 完整: {"domain": "https://example.com", "login_path": "/login", "api_user_key": "x-api-user", "bypass_method": "waf_cookies", ...}
+		- 完整: {"domain": "https://example.com", "login_path": "/login", "use_proxy": true, ...}
 		"""
+		default_use_proxy = defaults.use_proxy if defaults else False
+		default_persist_profile = defaults.persist_profile if defaults else False
 		return cls(
 			name=name,
 			domain=data['domain'],
-			login_path=data.get('login_path', '/login'),
-			sign_in_path=data.get('sign_in_path', '/api/user/sign_in'),
-			user_info_path=data.get('user_info_path', '/api/user/self'),
-			api_user_key=data.get('api_user_key', 'new-api-user'),
-			bypass_method=data.get('bypass_method'),
-			waf_cookie_names=data.get('waf_cookie_names'),
+			login_path=data.get('login_path', defaults.login_path if defaults else '/login'),
+			sign_in_path=data.get('sign_in_path', defaults.sign_in_path if defaults else '/api/user/sign_in'),
+			user_info_path=data.get('user_info_path', defaults.user_info_path if defaults else '/api/user/self'),
+			api_user_key=data.get('api_user_key', defaults.api_user_key if defaults else 'new-api-user'),
+			bypass_method=data.get('bypass_method', defaults.bypass_method if defaults else None),
+			waf_cookie_names=data.get('waf_cookie_names', defaults.waf_cookie_names if defaults else None),
+			use_proxy=data.get('use_proxy', default_use_proxy),
+			persist_profile=data.get('persist_profile', default_persist_profile),
 		)
 
 	def needs_waf_cookies(self) -> bool:
 		"""判断是否需要获取 WAF cookies"""
 		return self.bypass_method == 'waf_cookies'
-
-	def uses_playwright_requests(self) -> bool:
-		"""判断是否需要在浏览器上下文内执行 API 请求"""
-		return self.bypass_method == 'playwright'
 
 	def needs_manual_check_in(self) -> bool:
 		"""判断是否需要手动调用签到接口"""
@@ -89,6 +91,8 @@ class AppConfig:
 				api_user_key='new-api-user',
 				bypass_method='waf_cookies',
 				waf_cookie_names=['acw_tc', 'cdn_sec_tc', 'acw_sc__v2'],
+				use_proxy=False,
+				persist_profile=True,
 			),
 			'agentrouter': ProviderConfig(
 				name='agentrouter',
@@ -99,6 +103,8 @@ class AppConfig:
 				api_user_key='new-api-user',
 				bypass_method='waf_cookies',
 				waf_cookie_names=['acw_tc'],
+				use_proxy=True,
+				persist_profile=False,
 			),
 		}
 
@@ -115,7 +121,11 @@ class AppConfig:
 				# 解析自定义 providers,会覆盖默认配置
 				for name, provider_data in providers_data.items():
 					try:
-						providers[name] = ProviderConfig.from_dict(name, provider_data)
+						providers[name] = ProviderConfig.from_dict(
+							name,
+							provider_data,
+							defaults=providers.get(name),
+						)
 					except Exception as e:
 						print(f'[WARNING] Failed to parse provider "{name}": {e}, skipping')
 						continue
@@ -139,11 +149,13 @@ class AppConfig:
 class AccountConfig:
 	"""账号配置"""
 
-	api_user: str
-	cookies: dict | str | None = None
+	cookies: dict | str | None
+	api_user: str | None = None
 	access_token: str | None = None
 	provider: str = 'anyrouter'
 	name: str | None = None
+	email: str | None = None
+	password: str | None = None
 
 	@classmethod
 	def from_dict(cls, data: dict, index: int) -> 'AccountConfig':
@@ -152,12 +164,18 @@ class AccountConfig:
 		name = data.get('name', f'Account {index + 1}')
 
 		return cls(
-			api_user=data['api_user'],
-			cookies=data.get('cookies', {}),
+			cookies=data.get('cookies'),
+			api_user=data.get('api_user'),
 			access_token=data.get('access_token'),
 			provider=provider,
 			name=name if name else None,
+			email=data.get('email'),
+			password=data.get('password'),
 		)
+
+	def has_login_credentials(self) -> bool:
+		"""是否配置了邮箱密码登录"""
+		return bool(self.email and self.password)
 
 	def get_display_name(self, index: int) -> str:
 		"""获取显示名称"""
@@ -173,7 +191,12 @@ def load_accounts_config() -> list[AccountConfig] | None:
 
 	try:
 		accounts_data = json.loads(accounts_str)
+	except json.JSONDecodeError as e:
+		print(f'ERROR: ANYROUTER_ACCOUNTS JSON 解析失败: {e}')
+		print('HINT: 常见原因 - 末尾多余逗号、使用了单引号、包含注释、或换行格式问题')
+		return None
 
+	try:
 		if not isinstance(accounts_data, list):
 			print('ERROR: Account configuration must use array format [{}]')
 			return None
@@ -185,11 +208,19 @@ def load_accounts_config() -> list[AccountConfig] | None:
 				return None
 
 			if 'api_user' not in account_dict:
-				print(f'ERROR: Account {i + 1} missing required field (api_user)')
-				return None
+				has_login = account_dict.get('email') and account_dict.get('password')
+				if not has_login:
+					print(
+						f'ERROR: Account {i + 1} missing required field (api_user) - only email+password login can omit it'
+					)
+					return None
 
-			if 'cookies' not in account_dict and 'access_token' not in account_dict:
-				print(f'ERROR: Account {i + 1} missing authentication fields (cookies or access_token)')
+			has_cookies = 'cookies' in account_dict and account_dict['cookies']
+			has_access_token = 'access_token' in account_dict and account_dict['access_token']
+			has_login = account_dict.get('email') and account_dict.get('password')
+
+			if not has_cookies and not has_login and not has_access_token:
+				print(f'ERROR: Account {i + 1} must have either cookies, access_token, or email+password')
 				return None
 
 			if 'name' in account_dict and not account_dict['name']:
